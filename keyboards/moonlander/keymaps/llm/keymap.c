@@ -321,14 +321,11 @@ static uint8_t key_color[KEY_COUNT][3];
 
 // buffer for storing the last n keypresses
 #define N_KEYPRESSES_STORED 64
-// 200 ms per key?
-#define ROLLING_MODE_MICRO_PER_KEY 2000
+#define ROLLING_MODE_MS_PER_KEY 100
 static uint16_t last_n_keycode_indices[N_KEYPRESSES_STORED];
 static int n_keypresses_since_reset = 0;
 static uint32_t rolling_mode_start_time = 0;
 
-
-static int dbg_count = 0;
 
 void keyboard_post_init_user(void) {
     rgb_matrix_enable();
@@ -399,38 +396,52 @@ void matrix_scan_user(void) {
                 break;
             }
 
-            // this should be moved out of the loop
             case COLOR_MODE_ROLLING: {
-                dbg_count++;
-
                 if(rolling_mode_start_time == 0){
                     rolling_mode_start_time = timer_read32();
                 }
 
-                // microseconds
-                uint32_t age_since_start_of_sequence = timer_read32() - rolling_mode_start_time;
-                float nth_key = (float)age_since_start_of_sequence / ROLLING_MODE_MICRO_PER_KEY;
-                
-                if(nth_key >= n_keypresses_since_reset){
-                    rolling_mode_start_time = timer_read32();
-                    nth_key = 0;
-                    age_since_start_of_sequence = 0;
+                // check if keycode is in last_n_keycode_indices
+                int n_keypresses = fmin(N_KEYPRESSES_STORED, n_keypresses_since_reset);
+                int nth_key_in_sequence = -1;
+
+                for(int i = 0; i < n_keypresses; i++){
+                    if(last_n_keycode_indices[i] == keycode){
+                        nth_key_in_sequence = i;
+                        break;
+                    }
                 }
 
-                for(int i = 0; i < fmin(N_KEYPRESSES_STORED, n_keypresses_since_reset); i++){
-                    float age_full_fade_out = 1.0; // Time in ms after which the key is fully faded out
-                    float age = age_since_start_of_sequence - i * ROLLING_MODE_MICRO_PER_KEY; 
-                    float brightness_factor = age_dependent_brightness(age, age_full_fade_out);
+                if(nth_key_in_sequence < 0){
+                    // turn off light for keys not part of the sequence
+                    rgb_matrix_set_color(keycode, 0, 0, 0);
+                }else{
+                    // determine brightness by "state within the cycle"
+                    // microseconds
+                    uint32_t ms_since_start_of_sequence = timer_read32() - rolling_mode_start_time;
+                    float nth_key = (float)ms_since_start_of_sequence / ROLLING_MODE_MS_PER_KEY;
+                    
+                    // reset the cycle
+                    if(nth_key >= n_keypresses){
+                        rolling_mode_start_time = timer_read32();
+                        nth_key = 0;
+                        ms_since_start_of_sequence = 0;
+                    }
 
-                    // Apply the brightness factor to each color component
-                    // Use nonlinear scaling to make keys "pop" more
+                    float key_age = nth_key - nth_key_in_sequence;
+                    if(key_age < 0)
+                    {
+                        key_age = n_keypresses + key_age;
+                    }
+
+                    float brightness_factor = age_dependent_brightness(key_age, (float)n_keypresses);
                     r = 255.f * brightness_factor;
                     g = 255.f * brightness_factor;
                     b = 255.f * brightness_factor;
 
-                    //dprintf("Setting key colro rgb!: %d: (%d,%d,%d)\n", last_n_keycode_indices[i],r,g,b);
-                    rgb_matrix_set_color(last_n_keycode_indices[i], r, g, b);
+                    rgb_matrix_set_color(keycode, r, g, b);
                 }
+
                 break;
             }
         }   
